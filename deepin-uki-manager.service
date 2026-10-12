@@ -1,0 +1,19 @@
+[Unit]
+Description=Reconcile Deepin OSTree deployments with UKI files
+After=local-fs.target
+ConditionPathIsMountPoint=/boot/xbootldr
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/lib/deepin-uki-manager/deepin_uki_manager.py reconcile
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/boot/xbootldr /run/lock
+
+[Install]
+WantedBy=multi-user.target

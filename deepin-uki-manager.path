@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch GRUB configuration for OSTree deployment changes
+
+[Path]
+PathChanged=/boot/grub/grub.cfg
+Unit=deepin-uki-manager.service
+
+[Install]
+WantedBy=multi-user.target
