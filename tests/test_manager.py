@@ -3,7 +3,9 @@
 
 import importlib.util
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
     "deepin_uki_manager", "deepin_uki_manager.py"
@@ -62,6 +64,60 @@ class ParseTests(unittest.TestCase):
         config = SAMPLE.replace("/boot/immutable/abc.0/vmlinuz-6.6", "/boot/vmlinuz-6.6", 1)
         with self.assertRaises(manager.ManagerError):
             manager.parse_top_level_entries(config)
+
+
+class PublishTests(unittest.TestCase):
+    def test_pair_is_published_and_replaced_together_on_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory)
+            (destination / "deepin-current.efi").write_bytes(b"old-current")
+            (destination / "deepin-rollback.efi").write_bytes(b"old-rollback")
+            staging = destination / "staging"
+            staging.mkdir()
+            current = staging / "deepin-current.efi"
+            rollback = staging / "deepin-rollback.efi"
+            current.write_bytes(b"new-current")
+            rollback.write_bytes(b"new-rollback")
+
+            manager._publish_pair(
+                {"deepin-current.efi": current, "deepin-rollback.efi": rollback},
+                destination,
+            )
+
+            self.assertEqual(
+                (destination / "deepin-current.efi").read_bytes(), b"new-current"
+            )
+            self.assertEqual(
+                (destination / "deepin-rollback.efi").read_bytes(), b"new-rollback"
+            )
+            self.assertEqual(
+                list(destination.glob(".deepin-uki-recovery-*")), []
+            )
+
+    def test_unchanged_pair_is_not_replaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory)
+            current = destination / "deepin-current.efi"
+            rollback = destination / "deepin-rollback.efi"
+            current.write_bytes(b"same-current")
+            rollback.write_bytes(b"same-rollback")
+            staging = destination / "staging"
+            staging.mkdir()
+            staged_current = staging / "deepin-current.efi"
+            staged_rollback = staging / "deepin-rollback.efi"
+            staged_current.write_bytes(b"same-current")
+            staged_rollback.write_bytes(b"same-rollback")
+
+            manager._publish_pair(
+                {
+                    "deepin-current.efi": staged_current,
+                    "deepin-rollback.efi": staged_rollback,
+                },
+                destination,
+            )
+
+            self.assertEqual(current.read_bytes(), b"same-current")
+            self.assertEqual(rollback.read_bytes(), b"same-rollback")
 
 
 if __name__ == "__main__":

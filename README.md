@@ -3,7 +3,8 @@
 `deepin-uki-manager` 是一个面向 Deepin 不可变系统的 UKI 管理工具。
 它读取 `/boot/grub/grub.cfg` 中的顶层 `menuentry`，为每个包含内核、
 initrd 和 `ostree=` 参数的启动项生成一份独立的 Unified Kernel Image（UKI），
-并将 UKI 保存到 XBOOTLDR 分区的 `/boot/xbootldr/EFI/Linux/` 目录。
+并将 UKI 保存到 XBOOTLDR 分区的 `/boot/xbootldr/EFI/Linux/` 目录，
+固定命名为 `deepin-current.efi` 和 `deepin-rollback.efi`。
 
 本工具不负责执行 OSTree 更新，也不会修改 GRUB 配置或删除旧 UKI。
 它的作用是把已经由系统更新器生成的 GRUB 启动项同步为 UKI。
@@ -116,15 +117,16 @@ sudo ls -lh /boot/xbootldr/EFI/Linux/
 sudo journalctl -u deepin-uki-manager.service -n 100 --no-pager
 ```
 
-成功时会为不同 deployment 生成不同文件，例如：
+成功时会生成两份固定名称的文件：
 
 ```text
-deepin-3a61...d263a.0-<hash>.efi
-deepin-f845...a7c68.0-<hash>.efi
+deepin-current.efi
+deepin-rollback.efi
 ```
 
-文件名中的 hash 由 cmdline、内核、initrd 和 os-release 内容计算。
-内容没有变化时，重复执行不会无条件生成新文件。
+GRUB 中第一个符合条件的顶层菜单项作为 current，第二个作为 rollback。
+两份 UKI 会先在临时目录中生成并验证，全部成功后才替换正式文件。
+任意一份构建或验证失败，正式的 current/rollback 文件都不会改变。
 
 ## 检查 UKI 的启动参数
 
@@ -218,8 +220,10 @@ sudo ls -lh --time-style=full-iso \
   /boot/xbootldr/EFI/Linux/deepin-*.efi
 ```
 
-如果菜单项的内核、initrd 或 cmdline 发生变化，工具会生成带有新 hash
-的新 UKI。旧 UKI 默认不会删除，以便在新 UKI 生成失败时保留可启动版本。
+如果菜单项的内核、initrd 或 cmdline 发生变化，工具会重新生成对应的
+固定名称 UKI。旧 UKI 不会在构建失败时被替换，以便保留可启动版本。
+FAT32 不支持两个文件的真正多文件原子重命名；程序会在检测到发布错误时
+恢复已替换的文件。如果恢复也失败，会保留备份目录并报告错误。
 
 ## 真实更新流程
 

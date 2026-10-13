@@ -23,6 +23,10 @@ class ManagerError(RuntimeError):
     pass
 
 
+class TransactionRecoveryError(ManagerError):
+    """A pair publication failed and its recovery files must be preserved."""
+
+
 @dataclass(frozen=True)
 class BootEntry:
     title: str
@@ -213,67 +217,120 @@ def _build_one(
     entry: BootEntry,
     kernel: Path,
     initrds: tuple[Path, ...],
-    destination: Path,
+    output_path: Path,
     ukify: str,
     os_release: Path,
     secure_boot_key: Path | None,
     secure_boot_certificate: Path | None,
-) -> Path:
-    signature = hashlib.sha256(entry.cmdline.encode())
-    for path in (kernel, *initrds, os_release):
-        signature.update(str(path).encode())
-        with path.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                signature.update(chunk)
-    digest = signature.hexdigest()[:12]
-    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", entry.deployment_id)
-    final_path = destination / f"deepin-{safe_id}-{digest}.efi"
+) -> None:
+    cmd = [
+        ukify, "build", f"--linux={kernel}",
+        f"--cmdline={entry.cmdline}", f"--os-release={os_release}",
+    ]
+    cmd.extend(f"--initrd={initrd}" for initrd in initrds)
+    if secure_boot_key or secure_boot_certificate:
+        if not secure_boot_key or not secure_boot_certificate:
+            raise ManagerError("Secure Boot 签名需要同时提供私钥和证书")
+        cmd.extend([
+            f"--secureboot-private-key={secure_boot_key}",
+            f"--secureboot-certificate={secure_boot_certificate}",
+        ])
+    cmd.append(f"--output={output_path}")
+    subprocess.run(cmd, check=True)
 
-    destination.mkdir(parents=True, exist_ok=True)
-    if final_path.is_file():
-        sections = _pe_sections(final_path)
-        embedded_cmdline = sections.get(".cmdline", b"").split(b"\0", 1)[0].decode(errors="replace")
-        if embedded_cmdline == entry.cmdline:
-            return final_path
+    sections = _pe_sections(output_path)
+    missing = {".linux", ".initrd", ".cmdline"} - sections.keys()
+    if missing:
+        raise ManagerError(f"UKI 缺少必要 PE section：{', '.join(sorted(missing))}")
+    embedded_cmdline = sections[".cmdline"].split(b"\0", 1)[0].decode(errors="replace")
+    if embedded_cmdline != entry.cmdline:
+        raise ManagerError(f"{entry.title}: UKI 中的 .cmdline 与预期不一致")
 
-    fd, temp_name = tempfile.mkstemp(prefix=".deepin-uki-", suffix=".efi", dir=destination)
-    os.close(fd)
-    temp_path = Path(temp_name)
+    os.chmod(output_path, 0o644)
+    with output_path.open("rb") as stream:
+        os.fsync(stream.fileno())
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fsync_directory(path: Path) -> None:
+    dir_fd = os.open(path, os.O_DIRECTORY)
     try:
-        cmd = [
-            ukify, "build", f"--linux={kernel}",
-            f"--cmdline={entry.cmdline}", f"--os-release={os_release}",
-        ]
-        cmd.extend(f"--initrd={initrd}" for initrd in initrds)
-        if secure_boot_key or secure_boot_certificate:
-            if not secure_boot_key or not secure_boot_certificate:
-                raise ManagerError("Secure Boot 签名需要同时提供私钥和证书")
-            cmd.extend([
-                f"--secureboot-private-key={secure_boot_key}",
-                f"--secureboot-certificate={secure_boot_certificate}",
-            ])
-        cmd.append(f"--output={temp_path}")
-        subprocess.run(cmd, check=True)
-
-        sections = _pe_sections(temp_path)
-        missing = {".linux", ".initrd", ".cmdline"} - sections.keys()
-        if missing:
-            raise ManagerError(f"UKI 缺少必要 PE section：{', '.join(sorted(missing))}")
-        embedded_cmdline = sections[".cmdline"].split(b"\0", 1)[0].decode(errors="replace")
-        if embedded_cmdline != entry.cmdline:
-            raise ManagerError(f"{entry.title}: UKI 中的 .cmdline 与预期不一致")
-
-        with temp_path.open("rb") as stream:
-            os.fsync(stream.fileno())
-        os.replace(temp_path, final_path)
-        dir_fd = os.open(destination, os.O_DIRECTORY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-        return final_path
+        os.fsync(dir_fd)
     finally:
-        temp_path.unlink(missing_ok=True)
+        os.close(dir_fd)
+
+
+def _publish_pair(staged: dict[str, Path], destination: Path) -> None:
+    """Publish current/rollback together, restoring old files on runtime errors.
+
+    FAT does not provide a multi-file atomic rename. This provides rollback for
+    detected errors during publication; the backup files are retained if
+    restoration itself fails.
+    """
+    changed: dict[str, Path] = {}
+    for name, source in staged.items():
+        target = destination / name
+        if target.is_file() and _file_digest(source) == _file_digest(target):
+            continue
+        changed[name] = source
+
+    if not changed:
+        print("UKI 未变化，无需替换")
+        return
+
+    backup_dir = Path(tempfile.mkdtemp(prefix=".deepin-uki-recovery-", dir=destination))
+    had_original: dict[str, bool] = {}
+    try:
+        for name in changed:
+            target = destination / name
+            backup = backup_dir / name
+            had_original[name] = target.is_file()
+            if had_original[name]:
+                shutil.copy2(target, backup)
+                with backup.open("rb") as stream:
+                    os.fsync(stream.fileno())
+    except OSError:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        raise
+
+    published: list[str] = []
+    try:
+        for name, source in changed.items():
+            os.replace(source, destination / name)
+            published.append(name)
+        _fsync_directory(destination)
+    except OSError as publish_error:
+        restore_errors: list[str] = []
+        for name in reversed(published):
+            target = destination / name
+            try:
+                if had_original[name]:
+                    os.replace(backup_dir / name, target)
+                else:
+                    target.unlink(missing_ok=True)
+            except OSError as restore_error:
+                restore_errors.append(f"{name}: {restore_error}")
+        try:
+            _fsync_directory(destination)
+        except OSError as sync_error:
+            restore_errors.append(f"目录同步: {sync_error}")
+        if restore_errors:
+            raise TransactionRecoveryError(
+                f"发布失败：{publish_error}；恢复也失败，备份保留在 "
+                f"{backup_dir}（" + "; ".join(restore_errors) + ")"
+            ) from publish_error
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        raise ManagerError(
+            f"current/rollback UKI 发布失败，旧文件已恢复：{publish_error}"
+        ) from publish_error
+    shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def reconcile(args: argparse.Namespace) -> int:
@@ -289,29 +346,47 @@ def reconcile(args: argparse.Namespace) -> int:
         if not config.is_file():
             raise ManagerError(f"找不到 GRUB 配置：{config}")
         entries = parse_top_level_entries(config.read_text(encoding="utf-8"))
-        if not entries:
-            raise ManagerError("没有找到带 linux、initrd 和 ostree= 参数的顶层菜单项")
+        if len(entries) < 2:
+            raise ManagerError(
+                "没有找到 current 和 rollback 两个带 linux、initrd、ostree= "
+                "参数的顶层菜单项"
+            )
 
-        # Stable deployment IDs may appear more than once; keep the first
-        # top-level entry and avoid duplicate UKIs.
-        unique: dict[str, BootEntry] = {}
-        for entry in entries:
-            unique.setdefault(entry.deployment_id, entry)
+        # Deepin's generated GRUB menu puts the current deployment first and
+        # the rollback deployment second. Treat this pair as one transaction.
+        pair = (entries[0], entries[1])
+        if pair[0].deployment_id == pair[1].deployment_id:
+            raise ManagerError("current 和 rollback 指向同一个 deployment")
 
-        failures = 0
-        for deployment_id, entry in unique.items():
-            try:
-                kernel, initrds = _validate_entry(entry, root)
-                output = _build_one(
-                    entry, kernel, initrds, destination, args.ukify, os_release,
+        validated: list[tuple[BootEntry, Path, tuple[Path, ...]]] = []
+        for entry in pair:
+            kernel, initrds = _validate_entry(entry, root)
+            validated.append((entry, kernel, initrds))
+
+        destination.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".deepin-uki-transaction-", dir=destination
+        ) as transaction_dir_name:
+            transaction_dir = Path(transaction_dir_name)
+            staged = {
+                "deepin-current.efi": transaction_dir / "deepin-current.efi",
+                "deepin-rollback.efi": transaction_dir / "deepin-rollback.efi",
+            }
+            for (entry, kernel, initrds), output in zip(validated, staged.values()):
+                _build_one(
+                    entry, kernel, initrds, output, args.ukify, os_release,
                     Path(args.secure_boot_key) if args.secure_boot_key else None,
                     Path(args.secure_boot_certificate) if args.secure_boot_certificate else None,
                 )
-                print(f"OK {deployment_id}: {output}")
-            except (ManagerError, OSError, subprocess.CalledProcessError) as exc:
-                failures += 1
-                print(f"ERROR {deployment_id} ({entry.title}): {exc}", file=sys.stderr)
-        return 1 if failures else 0
+
+            _publish_pair(staged, destination)
+
+        for role, (entry, _, _) in zip(("current", "rollback"), validated):
+            print(
+                f"OK {role}: {entry.deployment_id} -> "
+                f"{destination / f'deepin-{role}.efi'}"
+            )
+        return 0
 
 
 def status(args: argparse.Namespace) -> int:
