@@ -36,6 +36,9 @@ class BootEntry:
         match = re.search(r"/([^/]+)/checkout/?$", self.ostree)
         if match:
             return match.group(1)
+        match = re.match(r"/boot/immutable/([^/]+)/", self.kernel)
+        if match:
+            return match.group(1)
         return hashlib.sha256(self.ostree.encode()).hexdigest()[:16]
 
 
@@ -121,6 +124,24 @@ def parse_top_level_entries(config: str) -> list[BootEntry]:
         ostree_args = [arg.split("=", 1)[1] for arg in args if arg.startswith("ostree=")]
         if len(ostree_args) != 1:
             continue
+        ostree = ostree_args[0]
+        if ostree == "auto":
+            # Deepin's initramfs can resolve ostree=auto using BOOT_IMAGE, but
+            # a UKI does not provide GRUB's per-entry BOOT_IMAGE value. Bind
+            # this UKI to the deployment encoded in this menu entry's kernel.
+            match = re.match(r"^/boot/immutable/([^/]+)/vmlinuz(?:-[^/]*)?$", kernel)
+            if not match:
+                raise ManagerError(
+                    f"{title}: ostree=auto 无法从内核路径识别 deployment：{kernel}"
+                )
+            deployment_id = match.group(1)
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", deployment_id):
+                raise ManagerError(f"{title}: 内核路径中的 deployment ID 不安全")
+            ostree = f"/ostree/data/{deployment_id}/checkout"
+            args = [
+                f"ostree={ostree}" if arg.startswith("ostree=") else arg
+                for arg in args
+            ]
         # This value is a GRUB-time variable, unavailable to a UKI. It is a
         # display-mode hint and is intentionally omitted from the UKI cmdline.
         args = [arg for arg in args if arg != "DEEPIN_GFXMODE=$DEEPIN_GFXMODE"]
@@ -131,7 +152,7 @@ def parse_top_level_entries(config: str) -> list[BootEntry]:
             kernel=kernel,
             initrds=tuple(initrd_args),
             cmdline=" ".join(args),
-            ostree=ostree_args[0],
+            ostree=ostree,
         ))
     return entries
 
@@ -147,6 +168,12 @@ def _validate_entry(entry: BootEntry, root: Path) -> tuple[Path, tuple[Path, ...
     if ".." in Path(entry.ostree).parts:
         raise ManagerError(f"{entry.title}: ostree= 路径包含 '..'")
     checkout = _rooted(root, entry.ostree)
+    # On Deepin the initramfs-visible /ostree/data path is backed by the
+    # persistent partition at /persistent/ostree/data on the running host.
+    # Accept either layout so the same code also works in image/test roots.
+    match = re.fullmatch(r"/ostree/data/([^/]+)/checkout", entry.ostree)
+    if not checkout.is_dir() and match:
+        checkout = root / "persistent" / "ostree" / "data" / match.group(1) / "checkout"
     if not checkout.is_dir():
         raise ManagerError(f"{entry.title}: OSTree checkout 不存在：{checkout}")
 

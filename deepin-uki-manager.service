@@ -2,10 +2,14 @@
 Description=Reconcile Deepin OSTree deployments with UKI files
 After=local-fs.target
 ConditionPathIsMountPoint=/boot/xbootldr
+StartLimitIntervalSec=60s
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /usr/lib/deepin-uki-manager/deepin_uki_manager.py reconcile
+Restart=on-failure
+RestartSec=5s
 User=root
 Group=root
 UMask=0077

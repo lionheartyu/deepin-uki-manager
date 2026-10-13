@@ -2,6 +2,8 @@
 Description=Watch GRUB configuration for OSTree deployment changes
 
 [Path]
+# PathChanged waits until the file has been closed after a write, avoiding a
+# reconcile against a partially rewritten grub.cfg.
 PathChanged=/boot/grub/grub.cfg
 Unit=deepin-uki-manager.service
 

@@ -16,6 +16,11 @@ The manager reads the GRUB configuration as data; it never evaluates it as a
 GRUB or shell program. It currently recognizes top-level `menuentry` blocks
 containing one `linux`/`linuxefi` line, one or more `initrd`/`initrdefi` paths,
 and exactly one `ostree=` kernel argument. Nested submenu entries are ignored.
+When a menu entry contains `ostree=auto`, the manager extracts the deployment
+ID from that entry's `/boot/immutable/<deployment>/vmlinuz...` path and embeds
+`ostree=/ostree/data/<deployment>/checkout` in the generated UKI. On Deepin,
+the checkout is also accepted at the host path
+`/persistent/ostree/data/<deployment>/checkout`.
 The `DEEPIN_GFXMODE=$DEEPIN_GFXMODE` GRUB-only argument is omitted because a UKI
 does not expand GRUB variables.
 
@@ -45,10 +50,13 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now deepin-uki-manager.service deepin-uki-manager.path
 ```
 
-The path unit only reacts to changes in `grub.cfg`. A production integration
-should also run `reconcile` at boot and after the OSTree deployment transaction,
-and should validate signing policy, deployment readiness, and retention before
-automatically selecting or deleting UKIs.
+The path unit reacts to changes in `grub.cfg` and starts the reconcile service.
+The service retries a failed reconcile three times within one minute, which
+covers the short window where the boot menu has been regenerated before the
+new kernel or initrd is fully installed. A production integration should also
+run `reconcile` after the OSTree deployment transaction, and should validate
+signing policy, deployment readiness, and retention before automatically
+selecting or deleting UKIs.
 
 ## Development checks
 
