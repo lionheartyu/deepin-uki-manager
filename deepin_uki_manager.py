@@ -213,6 +213,26 @@ def _pe_sections(path: Path) -> dict[str, bytes]:
     return sections
 
 
+def _validate_osrel_section(data: bytes) -> None:
+    payload = data.split(b"\0", 1)[0]
+    try:
+        content = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ManagerError("UKI 的 .osrel section 不是有效的 UTF-8") from exc
+
+    values = {}
+    for line in content.splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key] = value.strip().strip('"')
+    if not values.get("ID"):
+        raise ManagerError(
+            "UKI 的 .osrel section 缺少有效的 ID= 字段；"
+            "请确认 ukify 使用 --os-release=@<文件路径>"
+        )
+
+
 def _build_one(
     entry: BootEntry,
     kernel: Path,
@@ -225,7 +245,7 @@ def _build_one(
 ) -> None:
     cmd = [
         ukify, "build", f"--linux={kernel}",
-        f"--cmdline={entry.cmdline}", f"--os-release={os_release}",
+        f"--cmdline={entry.cmdline}", f"--os-release=@{os_release}",
     ]
     cmd.extend(f"--initrd={initrd}" for initrd in initrds)
     if secure_boot_key or secure_boot_certificate:
@@ -239,9 +259,10 @@ def _build_one(
     subprocess.run(cmd, check=True)
 
     sections = _pe_sections(output_path)
-    missing = {".linux", ".initrd", ".cmdline"} - sections.keys()
+    missing = {".linux", ".initrd", ".cmdline", ".osrel"} - sections.keys()
     if missing:
         raise ManagerError(f"UKI 缺少必要 PE section：{', '.join(sorted(missing))}")
+    _validate_osrel_section(sections[".osrel"])
     embedded_cmdline = sections[".cmdline"].split(b"\0", 1)[0].decode(errors="replace")
     if embedded_cmdline != entry.cmdline:
         raise ManagerError(f"{entry.title}: UKI 中的 .cmdline 与预期不一致")

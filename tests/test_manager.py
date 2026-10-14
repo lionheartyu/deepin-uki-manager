@@ -66,6 +66,17 @@ class ParseTests(unittest.TestCase):
             manager.parse_top_level_entries(config)
 
 
+class UKISectionTests(unittest.TestCase):
+    def test_osrel_section_must_contain_os_release_data(self):
+        manager._validate_osrel_section(
+            b'ID=deepin\nNAME="Deepin GNU/Linux"\nPRETTY_NAME="Deepin"\n\0'
+        )
+
+    def test_osrel_section_rejects_a_path_instead_of_file_contents(self):
+        with self.assertRaisesRegex(manager.ManagerError, "缺少有效的 ID"):
+            manager._validate_osrel_section(b"/etc/os-release\0")
+
+
 class PublishTests(unittest.TestCase):
     def test_pair_is_published_and_replaced_together_on_success(self):
         with tempfile.TemporaryDirectory() as directory:
