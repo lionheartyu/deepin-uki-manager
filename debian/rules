@@ -1,0 +1,11 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_test:
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+
+# 安装器负责根据 systemd-boot 开关启用服务；安装 deb 时不自动启动或启用。
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start

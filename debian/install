@@ -1,0 +1,4 @@
+deepin_uki_manager.py usr/lib/deepin-uki-manager
+deepin-uki-manager.service lib/systemd/system
+deepin-uki-manager.path lib/systemd/system
+bin/deepin-uki-manager usr/bin

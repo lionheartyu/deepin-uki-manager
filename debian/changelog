@@ -1,0 +1,7 @@
+deepin-manager-uki (0.1.0) unstable; urgency=medium
+
+  * Add an initial Debian package for Deepin OSTree UKI management.
+  * Install the reconcile command and systemd service/path units.
+  * Leave service enablement to the installer when systemd-boot is selected.
+
+ -- DongShengYuan <DongShengYuan@uniontech.com>  Fri, 16 Oct 2026 14:00:00 +0800

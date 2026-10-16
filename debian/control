@@ -1,0 +1,21 @@
+Source: deepin-manager-uki
+Section: admin
+Priority: optional
+Maintainer: Deepin Packages Builder <packages@deepin.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ python3
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://github.com/linuxdeepin/deepin-uki-manager
+
+Package: deepin-manager-uki
+Architecture: all
+Depends:
+ python3,
+ systemd-ukify,
+ systemd-boot-efi,
+ ${misc:Depends}
+Description: Generate and maintain Deepin OSTree Unified Kernel Images
+ Watches generated GRUB configuration and rebuilds current and rollback
+ Unified Kernel Images on the XBOOTLDR partition.

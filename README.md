@@ -9,6 +9,40 @@ initrd 和 `ostree=` 参数的启动项生成一份独立的 Unified Kernel Imag
 本工具不负责执行 OSTree 更新，也不会修改 GRUB 配置或删除旧 UKI。
 它的作用是把已经由系统更新器生成的 GRUB 启动项同步为 UKI。
 
+## Debian 打包
+
+源码已经包含标准 Debian 打包目录，可以构建独立的
+`deepin-manager-uki` 软件包：
+
+```bash
+dpkg-buildpackage -us -uc -b
+```
+
+生成的文件位于上一级目录：
+
+```text
+../deepin-manager-uki_<版本>_all.deb
+```
+
+软件包安装以下内容：
+
+```text
+/usr/bin/deepin-uki-manager
+/usr/lib/deepin-uki-manager/deepin_uki_manager.py
+/lib/systemd/system/deepin-uki-manager.service
+/lib/systemd/system/deepin-uki-manager.path
+```
+
+软件包安装时不会自动启用或启动服务。安装器在确认用户启用
+systemd-boot、XBOOTLDR 已挂载并完成首次 UKI 生成后，再执行：
+
+```bash
+systemctl --root=/target enable deepin-uki-manager.service
+systemctl --root=/target enable deepin-uki-manager.path
+```
+
+这样普通 GRUB 安装不会意外启动 UKI 管理器。
+
 ## 工作方式
 
 工具不会执行 `grub.cfg` 中的 shell/GRUB 代码，只把它当作配置文件解析。
