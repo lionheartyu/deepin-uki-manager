@@ -82,7 +82,9 @@ def _code_and_brace_delta(line: str) -> tuple[str, int]:
     return "".join(out), delta
 
 
-def parse_top_level_entries(config: str) -> list[BootEntry]:
+def parse_top_level_entries(
+    config: str, auto_deployments: list[str] | None = None
+) -> list[BootEntry]:
     """Parse top-level menuentry blocks, intentionally ignoring submenus."""
     blocks: list[tuple[str, list[str]]] = []
     depth = 0
@@ -112,6 +114,7 @@ def parse_top_level_entries(config: str) -> list[BootEntry]:
         depth += delta
 
     entries: list[BootEntry] = []
+    auto_deployment_ids = iter(auto_deployments or [])
     for title, lines in blocks:
         linux_args: list[str] | None = None
         initrd_args: list[str] = []
@@ -134,13 +137,22 @@ def parse_top_level_entries(config: str) -> list[BootEntry]:
             # a UKI does not provide GRUB's per-entry BOOT_IMAGE value. Bind
             # this UKI to the deployment encoded in this menu entry's kernel.
             match = re.match(r"^/boot/immutable/([^/]+)/vmlinuz(?:-[^/]*)?$", kernel)
-            if not match:
-                raise ManagerError(
-                    f"{title}: ostree=auto 无法从内核路径识别 deployment：{kernel}"
-                )
-            deployment_id = match.group(1)
+            if match:
+                deployment_id = match.group(1)
+            else:
+                # Some Deepin images expose the current and rollback kernels
+                # as /boot/vmlinuz-* while keeping ostree=auto. In that layout
+                # the deployment IDs are recorded in status.list, in the same
+                # current/rollback order as the generated GRUB entries.
+                try:
+                    deployment_id = next(auto_deployment_ids)
+                except StopIteration as exc:
+                    raise ManagerError(
+                        f"{title}: ostree=auto 无法从内核路径识别 deployment：{kernel}"
+                        "；请提供 /persistent/ostree/data/status.list"
+                    ) from exc
             if not re.fullmatch(r"[A-Za-z0-9._-]+", deployment_id):
-                raise ManagerError(f"{title}: 内核路径中的 deployment ID 不安全")
+                raise ManagerError(f"{title}: deployment ID 不安全：{deployment_id}")
             ostree = f"/ostree/data/{deployment_id}/checkout"
             args = [
                 f"ostree={ostree}" if arg.startswith("ostree=") else arg
@@ -164,6 +176,24 @@ def parse_top_level_entries(config: str) -> list[BootEntry]:
 def _rooted(root: Path, path: str | Path) -> Path:
     candidate = Path(path)
     return root / candidate.relative_to("/") if candidate.is_absolute() else root / candidate
+
+
+def _read_deployment_list(path: Path) -> list[str]:
+    """Read Deepin's data deployment IDs in current/rollback order."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise ManagerError(f"无法读取 deployment 列表：{path}: {exc}") from exc
+
+    deployments = [line.strip() for line in lines if line.strip()]
+    for deployment_id in deployments:
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", deployment_id):
+            raise ManagerError(
+                f"deployment 列表包含不安全的 ID：{deployment_id}"
+            )
+    return deployments
 
 
 def _validate_entry(entry: BootEntry, root: Path) -> tuple[Path, tuple[Path, ...]]:
@@ -359,6 +389,8 @@ def reconcile(args: argparse.Namespace) -> int:
     config = _rooted(root, args.grub_config)
     destination = _rooted(root, args.uki_dir)
     os_release = _rooted(root, args.os_release)
+    status_list = _rooted(root, args.status_list)
+    auto_deployments = _read_deployment_list(status_list)
     lock_path = _rooted(root, args.lock_file)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -366,7 +398,9 @@ def reconcile(args: argparse.Namespace) -> int:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if not config.is_file():
             raise ManagerError(f"找不到 GRUB 配置：{config}")
-        entries = parse_top_level_entries(config.read_text(encoding="utf-8"))
+        entries = parse_top_level_entries(
+            config.read_text(encoding="utf-8"), auto_deployments
+        )
         if len(entries) < 2:
             raise ManagerError(
                 "没有找到 current 和 rollback 两个带 linux、initrd、ostree= "
@@ -436,6 +470,11 @@ def make_parser() -> argparse.ArgumentParser:
             sub.add_argument("--ukify", default=shutil.which("ukify") or "ukify")
             sub.add_argument("--os-release", default="/etc/os-release")
             sub.add_argument("--lock-file", default="/run/lock/deepin-uki-manager.lock")
+            sub.add_argument(
+                "--status-list",
+                default="/persistent/ostree/data/status.list",
+                help="Deepin data deployment 列表（current/rollback 顺序）",
+            )
             sub.add_argument("--secure-boot-key")
             sub.add_argument("--secure-boot-certificate")
     return parser

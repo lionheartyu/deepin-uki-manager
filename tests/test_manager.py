@@ -60,9 +60,19 @@ class ParseTests(unittest.TestCase):
         entry = manager.parse_top_level_entries(config)[0]
         self.assertEqual(entry.ostree, "/ostree/data/explicit.1/checkout")
 
-    def test_auto_requires_deployment_in_kernel_path(self):
+    def test_auto_uses_status_list_for_plain_kernel_paths(self):
+        config = SAMPLE.replace(
+            "/boot/immutable/abc.0/vmlinuz-6.6", "/boot/vmlinuz-6.6", 1
+        ).replace(
+            "/boot/immutable/def.0/vmlinuz-6.6", "/boot/vmlinuz-6.6", 1
+        )
+        entries = manager.parse_top_level_entries(config, ["abc.0", "def.0"])
+        self.assertEqual(entries[0].ostree, "/ostree/data/abc.0/checkout")
+        self.assertEqual(entries[1].ostree, "/ostree/data/def.0/checkout")
+
+    def test_auto_requires_deployment_mapping(self):
         config = SAMPLE.replace("/boot/immutable/abc.0/vmlinuz-6.6", "/boot/vmlinuz-6.6", 1)
-        with self.assertRaises(manager.ManagerError):
+        with self.assertRaisesRegex(manager.ManagerError, "status.list"):
             manager.parse_top_level_entries(config)
 
 

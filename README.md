@@ -60,7 +60,7 @@ systemctl --root=/target enable deepin-uki-manager.path
 ostree=auto
 ```
 
-工具会从同一个菜单项的内核路径中提取 deployment ID。例如：
+如果内核路径包含 deployment ID，工具会直接从路径提取。例如：
 
 ```text
 /boot/immutable/3a61...d263a.0/vmlinuz-6.6.0-amd64-desktop
@@ -74,6 +74,15 @@ ostree=/ostree/data/3a61...d263a.0/checkout
 
 这样 current 和 rollback UKI 会分别绑定到各自的 OSTree deployment，
 不会都依赖同一个 `ostree=auto`。
+
+部分 Deepin V25 系统的内核路径是普通的 `/boot/vmlinuz-*`，此时工具会读取：
+
+```text
+/persistent/ostree/data/status.list
+```
+
+并按文件中的顺序把 deployment ID 绑定到 GRUB 的前两个顶层菜单项（current、rollback）。
+也可以通过 `reconcile --status-list <path>` 指定其他列表文件。
 
 Deepin 运行系统中，checkout 可能实际位于：
 
